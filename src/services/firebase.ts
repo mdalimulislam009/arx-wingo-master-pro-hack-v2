@@ -1,6 +1,6 @@
 import { initializeApp, getApps, getApp } from 'firebase/app';
-import { getDatabase, ref, set, get, child, remove } from 'firebase/database';
-import { VIPKey } from '../types';
+import { getDatabase, ref, set, get, child, remove, onValue } from 'firebase/database';
+import { VIPKey, GlobalServerConfig } from '../types';
 
 export const firebaseConfig = {
   apiKey: "AIzaSyBrNaFnXfhl1PUENlDxt7IpZo855slqymU",
@@ -23,6 +23,8 @@ try {
 
 const LOCAL_STORAGE_KEYS = 'arx_vip_keys_vault';
 const LOCAL_STORAGE_AUTH = 'arx_authenticated_session';
+const GLOBAL_CONFIG_REF = 'global_app_config';
+const LOCAL_STORAGE_GLOBAL_CONFIG = 'arx_global_config_cache';
 
 // Pre-seeded master keys for instantaneous VIP access & fallback
 const DEFAULT_INITIAL_KEYS: VIPKey[] = [
@@ -59,61 +61,56 @@ export function getLocalKeys(): VIPKey[] {
   } catch {
     // fallback
   }
-  localStorage.setItem(LOCAL_STORAGE_KEYS, JSON.stringify(DEFAULT_INITIAL_KEYS));
   return DEFAULT_INITIAL_KEYS;
 }
 
 export function saveLocalKeys(keys: VIPKey[]) {
   try {
     localStorage.setItem(LOCAL_STORAGE_KEYS, JSON.stringify(keys));
-  } catch (e) {
-    console.error("Local save error:", e);
+  } catch {
+    // ignore
   }
 }
 
 /**
- * Fetch all keys from Firebase RTDB with fallback to localStorage
+ * Fetch all keys from Firebase Realtime Database
  */
 export async function fetchAllKeys(): Promise<VIPKey[]> {
-  const local = getLocalKeys();
-  if (!db) return local;
+  if (!db) return getLocalKeys();
 
   try {
     const dbRef = ref(db);
     const snapshot = await get(child(dbRef, 'vip_keys'));
     if (snapshot.exists()) {
       const val = snapshot.val();
-      const list: VIPKey[] = Object.values(val);
-      if (list.length > 0) {
-        saveLocalKeys(list);
-        return list;
+      const keysArray: VIPKey[] = Object.values(val);
+      if (keysArray.length > 0) {
+        saveLocalKeys(keysArray);
+        return keysArray;
       }
     }
   } catch (err) {
-    console.warn("Firebase fetch error, utilizing local key vault:", err);
+    console.warn("Firebase fetch error, using local keys:", err);
   }
-  return local;
+
+  return getLocalKeys();
 }
 
 /**
- * Add or update key in Firebase & localStorage
+ * Save new or updated key
  */
-export async function saveVIPKey(keyData: VIPKey): Promise<boolean> {
-  const keys = getLocalKeys();
-  const existingIdx = keys.findIndex(k => k.key.trim().toUpperCase() === keyData.key.trim().toUpperCase());
-  if (existingIdx >= 0) {
-    keys[existingIdx] = keyData;
-  } else {
-    keys.unshift(keyData);
-  }
-  saveLocalKeys(keys);
+export async function saveVIPKey(keyItem: VIPKey): Promise<boolean> {
+  const current = getLocalKeys().filter(k => k.key !== keyItem.key);
+  current.push(keyItem);
+  saveLocalKeys(current);
 
   if (db) {
     try {
-      const safeKeyId = keyData.key.replace(/[.#$[\]]/g, '_');
-      await set(ref(db, `vip_keys/${safeKeyId}`), keyData);
+      const safeKeyId = keyItem.key.replace(/[.#$[\]]/g, '_');
+      await set(ref(db, `vip_keys/${safeKeyId}`), keyItem);
+      return true;
     } catch (err) {
-      console.warn("Firebase write failed, saved locally:", err);
+      console.warn("Firebase write error, saved locally:", err);
     }
   }
   return true;
@@ -191,5 +188,104 @@ export function clearSessionAuth() {
     sessionStorage.removeItem(LOCAL_STORAGE_AUTH);
   } catch {
     // ignore
+  }
+}
+
+/* ================================================================ */
+/* LIVE 2-SECOND SERVER SYNC: NAME, PHOTO LOGO & ALL USER LOGIC ON/OFF */
+/* ================================================================ */
+
+export function getCachedGlobalConfig(): GlobalServerConfig | null {
+  try {
+    const raw = localStorage.getItem(LOCAL_STORAGE_GLOBAL_CONFIG);
+    if (raw) return JSON.parse(raw);
+  } catch {
+    // ignore
+  }
+  return null;
+}
+
+export function cacheGlobalConfig(config: GlobalServerConfig) {
+  try {
+    localStorage.setItem(LOCAL_STORAGE_GLOBAL_CONFIG, JSON.stringify(config));
+  } catch {
+    // ignore
+  }
+}
+
+/**
+ * Save Name, Photo Logo, Logic ON/OFF to Firebase Server
+ * Every connected client will receive this update live in real-time!
+ */
+export async function saveGlobalSettingsToServer(config: GlobalServerConfig): Promise<boolean> {
+  const payload: GlobalServerConfig = {
+    ...config,
+    updatedAt: Date.now()
+  };
+
+  cacheGlobalConfig(payload);
+
+  if (db) {
+    try {
+      await set(ref(db, GLOBAL_CONFIG_REF), payload);
+      return true;
+    } catch (err) {
+      console.warn("Failed to write global config to Firebase, cached locally:", err);
+    }
+  }
+  return true;
+}
+
+/**
+ * Fetch global settings from server
+ */
+export async function fetchGlobalSettingsFromServer(): Promise<GlobalServerConfig | null> {
+  if (!db) return getCachedGlobalConfig();
+
+  try {
+    const dbRef = ref(db);
+    const snapshot = await get(child(dbRef, GLOBAL_CONFIG_REF));
+    if (snapshot.exists()) {
+      const data = snapshot.val() as GlobalServerConfig;
+      if (data) {
+        cacheGlobalConfig(data);
+        return data;
+      }
+    }
+  } catch (err) {
+    console.warn("Fetch global config failed:", err);
+  }
+  return getCachedGlobalConfig();
+}
+
+/**
+ * Subscribe to Realtime Database updates for global settings.
+ * Pushes updates instantaneously to all users without page refresh!
+ */
+export function subscribeToGlobalSettings(callback: (config: GlobalServerConfig) => void): () => void {
+  if (!db) {
+    return () => {};
+  }
+
+  try {
+    const configRef = ref(db, GLOBAL_CONFIG_REF);
+    const unsubscribe = onValue(configRef, (snapshot) => {
+      if (snapshot.exists()) {
+        const val = snapshot.val() as GlobalServerConfig;
+        if (val) {
+          cacheGlobalConfig(val);
+          callback(val);
+        }
+      }
+    }, (err) => {
+      console.warn("Global config onValue subscription error:", err);
+    });
+
+    return () => {
+      unsubscribe();
+    };
+  } catch (err) {
+    console.warn("Failed to subscribe to global config:", err);
+    return () => {};
   }
 }

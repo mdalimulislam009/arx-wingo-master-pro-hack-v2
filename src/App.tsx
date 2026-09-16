@@ -3,15 +3,22 @@ import { GameBackground } from './components/GameBackground';
 import { PredictorHUD } from './components/PredictorHUD';
 import { RoundLogoButton } from './components/RoundLogoButton';
 import { AdminModal } from './components/AdminModal';
-import { AppSettings, PredictionResult } from './types';
+import { AppSettings, PredictionResult, GlobalServerConfig } from './types';
 import { engineInstance } from './services/predictionEngine';
-import { isSessionAuthenticated } from './services/firebase';
+import { 
+  isSessionAuthenticated, 
+  subscribeToGlobalSettings, 
+  fetchGlobalSettingsFromServer 
+} from './services/firebase';
 import { sounds } from './services/soundEffects';
 
-const LOGO_URL = 'https://i.postimg.cc/sxB74TxX/file-00000000097c81f5abb566d8a5f9d2ff.png';
 const SETTINGS_STORAGE_KEY = 'arx_dragon_settings_v2';
 
 const DEFAULT_SETTINGS: AppSettings = {
+  appName: 'ORANGE APEX UI',
+  logoUrl: 'https://i.postimg.cc/sxB74TxX/file-00000000097c81f5abb566d8a5f9d2ff.png',
+  logicEnabled: true,
+  logicDisabledMessage: 'LOGIC TEMPORARILY PAUSED BY ADMIN',
   gameIframeUrl: 'https://www.hgnice.top/#/register?invitationCode=541612199538',
   apiEndpoint30s: 'https://draw.ar-lottery01.com/WinGo/WinGo_30S/GetHistoryIssuePage.json',
   apiEndpoint1m: 'https://draw.ar-lottery01.com/WinGo/WinGo_1M/GetHistoryIssuePage.json',
@@ -54,7 +61,7 @@ export default function App() {
 
   const lastPeriodRef = useRef<string>('');
 
-  // Persist settings
+  // Persist settings locally
   const handleSaveSettings = (newSettings: AppSettings) => {
     setSettings(newSettings);
     try {
@@ -63,6 +70,76 @@ export default function App() {
       // ignore
     }
   };
+
+  // 1. REAL-TIME 2-SECOND SERVER SYNC (All users receive name, photo logo, and logic ON/OFF)
+  useEffect(() => {
+    // Apply server config to local settings
+    const applyServerConfig = (serverConfig: GlobalServerConfig) => {
+      setSettings((prev) => {
+        let changed = false;
+        const next = { ...prev };
+
+        if (serverConfig.appName && serverConfig.appName !== prev.appName) {
+          next.appName = serverConfig.appName;
+          changed = true;
+          document.title = serverConfig.appName;
+        }
+
+        if (serverConfig.logoUrl !== undefined && serverConfig.logoUrl !== prev.logoUrl) {
+          next.logoUrl = serverConfig.logoUrl;
+          changed = true;
+        }
+
+        if (serverConfig.logicEnabled !== undefined && serverConfig.logicEnabled !== prev.logicEnabled) {
+          next.logicEnabled = serverConfig.logicEnabled;
+          changed = true;
+        }
+
+        if (serverConfig.logicDisabledMessage !== undefined && serverConfig.logicDisabledMessage !== prev.logicDisabledMessage) {
+          next.logicDisabledMessage = serverConfig.logicDisabledMessage;
+          changed = true;
+        }
+
+        if (serverConfig.activeEngine && serverConfig.activeEngine !== prev.activeEngine) {
+          next.activeEngine = serverConfig.activeEngine;
+          changed = true;
+        }
+
+        if (changed) {
+          try {
+            localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(next));
+          } catch {
+            // ignore
+          }
+          return next;
+        }
+        return prev;
+      });
+    };
+
+    // Immediate initial fetch from server
+    fetchGlobalSettingsFromServer().then((cfg) => {
+      if (cfg) applyServerConfig(cfg);
+    });
+
+    // Real-time Firebase WebSocket listener (sub-second update)
+    const unsubscribe = subscribeToGlobalSettings((cfg) => {
+      applyServerConfig(cfg);
+    });
+
+    // 2-Second polling heartbeat fallback to guarantee every user syncs within 2 seconds
+    const interval2s = setInterval(async () => {
+      const cfg = await fetchGlobalSettingsFromServer();
+      if (cfg) {
+        applyServerConfig(cfg);
+      }
+    }, 2000);
+
+    return () => {
+      unsubscribe();
+      clearInterval(interval2s);
+    };
+  }, []);
 
   // Active API endpoint helper
   const getActiveApiUrl = useCallback(() => {
@@ -73,6 +150,10 @@ export default function App() {
 
   // Execute or lock prediction calculation with Premium 3D Loading Animation
   const triggerPrediction = useCallback((forceNew: boolean = false) => {
+    if (!settings.logicEnabled) {
+      return;
+    }
+
     setIsLoading(true);
     sounds.playScan();
 
@@ -93,17 +174,18 @@ export default function App() {
         sounds.playLock();
       }
     }, 1150);
-  }, [settings.activeEngine]);
+  }, [settings.activeEngine, settings.logicEnabled]);
 
   // Advance level manually for testing 2-3 level fix winning
   const handleAdvanceTestLevel = useCallback(() => {
+    if (!settings.logicEnabled) return;
     const newLvl = engineInstance.advanceTestLevel();
     setCurrentLevel(newLvl);
     setLevelWinLabel(engineInstance.getLevelWinLabel());
     setLastResultStatus(engineInstance.getLastResultStatus());
     setStreakWins(engineInstance.getWinStreak());
     triggerPrediction(true);
-  }, [triggerPrediction]);
+  }, [triggerPrediction, settings.logicEnabled]);
 
   // Sync API Issue History every 2 seconds (working API 2s sync)
   useEffect(() => {
@@ -117,7 +199,9 @@ export default function App() {
 
         if (nextPeriod !== lastPeriodRef.current) {
           lastPeriodRef.current = nextPeriod;
-          triggerPrediction(true);
+          if (settings.logicEnabled) {
+            triggerPrediction(true);
+          }
         }
       } catch (e) {
         console.warn("API 2s sync notice:", e);
@@ -129,7 +213,7 @@ export default function App() {
 
     const intervalId = setInterval(syncApi, intervalTime);
     return () => clearInterval(intervalId);
-  }, [getActiveApiUrl, settings.syncIntervalMs, triggerPrediction]);
+  }, [getActiveApiUrl, settings.syncIntervalMs, settings.logicEnabled, triggerPrediction]);
 
   // Real-time second countdown sync
   useEffect(() => {
@@ -142,27 +226,29 @@ export default function App() {
 
       setCountdown(remain);
 
-      if (remain === cycleSeconds) {
+      if (remain === cycleSeconds && settings.logicEnabled) {
         triggerPrediction(true);
       }
     }, 1000);
 
     return () => clearInterval(timer);
-  }, [settings.activeApi, triggerPrediction]);
+  }, [settings.activeApi, settings.logicEnabled, triggerPrediction]);
 
   // First time initial prediction
   useEffect(() => {
-    if (!prediction) {
+    if (!prediction && settings.logicEnabled) {
       triggerPrediction(false);
     }
-  }, [prediction, triggerPrediction]);
+  }, [prediction, settings.logicEnabled, triggerPrediction]);
 
   // Key unlock success handler inside Predictor Box
   const handleKeyUnlocked = (label: string) => {
     console.log("VIP Access granted for:", label);
     setIsUnlocked(true);
     setIsHudVisible(true);
-    triggerPrediction(true);
+    if (settings.logicEnabled) {
+      triggerPrediction(true);
+    }
   };
 
   return (
@@ -177,11 +263,13 @@ export default function App() {
             sounds.playClick();
             setIsHudVisible(true);
           }}
-          logoUrl={LOGO_URL}
+          logoUrl={settings.logoUrl}
         />
       )}
 
       {/* 3. Predictor HUD Overlay with:
+             - Admin-controlled Name and Photo Logo
+             - All user logic ON/OFF system
              - VIP Login embedded directly inside the box (when not unlocked)
              - Premium 3D Loading Animation on new prediction arrival
              - Strict 2-3 Level Fix Winning engine
@@ -195,7 +283,10 @@ export default function App() {
           onExecute={() => triggerPrediction(true)}
           onHide={() => setIsHudVisible(false)}
           onOpenAdmin={() => setIsAdminOpen(true)}
-          logoUrl={LOGO_URL}
+          appName={settings.appName}
+          logoUrl={settings.logoUrl}
+          logicEnabled={settings.logicEnabled}
+          logicDisabledMessage={settings.logicDisabledMessage}
           activeEngine={settings.activeEngine}
           currentLevel={currentLevel}
           lastResultStatus={lastResultStatus}

@@ -35,6 +35,10 @@ export interface VIPKey {
 }
 
 export interface AppSettings {
+  appName: string; // Dynamic HUD/App Title (e.g. "ORANGE APEX UI")
+  logoUrl: string; // Dynamic Photo/Logo Image URL
+  logicEnabled: boolean; // Master toggle: All user prediction logic ON / OFF
+  logicDisabledMessage: string; // Notification when logic is OFF
   gameIframeUrl: string;
   apiEndpoint30s: string;
   apiEndpoint1m: string;
@@ -46,4 +50,14 @@ export interface AppSettings {
   maxLevelClamp: number; // default 3
   adminPasswordHash: string; // 'abirta009'
   soundEnabled: boolean;
+}
+
+export interface GlobalServerConfig {
+  appName?: string;
+  logoUrl?: string;
+  logicEnabled?: boolean;
+  logicDisabledMessage?: string;
+  activeApi?: '30S' | '1M' | 'CUSTOM';
+  activeEngine?: LogicEngine;
+  updatedAt?: number;
 }

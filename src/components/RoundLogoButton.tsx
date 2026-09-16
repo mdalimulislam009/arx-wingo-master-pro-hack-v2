@@ -36,9 +36,13 @@ export const RoundLogoButton: React.FC<RoundLogoButtonProps> = ({ onClick, logoU
 
       {/* Round Logo Image */}
       <img
-        src={logoUrl}
+        src={logoUrl || 'https://i.postimg.cc/sxB74TxX/file-00000000097c81f5abb566d8a5f9d2ff.png'}
         alt="ARX Logo"
-        className="w-11 h-11 rounded-full object-cover shadow-inner pointer-events-none border border-yellow-300/60"
+        referrerPolicy="no-referrer"
+        onError={(e) => {
+          (e.target as HTMLImageElement).src = 'https://i.postimg.cc/sxB74TxX/file-00000000097c81f5abb566d8a5f9d2ff.png';
+        }}
+        className="w-11 h-11 rounded-full object-cover shadow-inner pointer-events-none border border-amber-300/80"
       />
     </button>
   );
