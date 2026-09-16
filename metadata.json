@@ -1,0 +1,6 @@
+{
+  "name": "ARX Dragon AI VIP HUD",
+  "description": "Ultra-compact quantum cyber HUD with Titan Sort Pro, Shadow, and XQuantum Rise predictive analysis, secure admin access, and live game integration.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
